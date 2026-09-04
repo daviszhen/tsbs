@@ -2,14 +2,18 @@
 set -euo pipefail
 
 # Run the same prepared TSBS data against MatrixOne or ClickHouse.  This is a
-# local correctness/performance harness; it intentionally keeps all generated
-# files under /mnt/fastdata/tsbs (or TSBS_ROOT when overridden).
+# local correctness/performance harness. Data, results, and logs can be kept
+# outside the source tree with TSBS_DATA_ROOT, TSBS_RESULT_ROOT, and
+# TSBS_LOG_ROOT.
 
 TSBS_ROOT=${TSBS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 USE_CASE=${USE_CASE:-cpu-only}
-PREPARED_DIR=${PREPARED_DIR:-"${TSBS_ROOT}/data/baseline-scale100-1d/prepared-${USE_CASE}"}
-RESULT_ROOT=${RESULT_ROOT:-"${TSBS_ROOT}/results/tsbs_local/${USE_CASE}"}
-LOG_ROOT=${LOG_ROOT:-"${TSBS_ROOT}/logs/tsbs_local/${USE_CASE}"}
+TSBS_DATA_ROOT=${TSBS_DATA_ROOT:-${DATA_ROOT:-"${TSBS_ROOT}/data/baseline-scale100-1d"}}
+RESULT_BASE=${TSBS_RESULT_ROOT:-"${TSBS_ROOT}/results"}
+LOG_BASE=${TSBS_LOG_ROOT:-"${TSBS_ROOT}/logs"}
+PREPARED_DIR=${PREPARED_DIR:-"${TSBS_DATA_ROOT}/prepared-${USE_CASE}"}
+RESULT_ROOT=${RESULT_ROOT:-"${RESULT_BASE}/tsbs_local/${USE_CASE}"}
+LOG_ROOT=${LOG_ROOT:-"${LOG_BASE}/tsbs_local/${USE_CASE}"}
 QUERY_REPEATS=${QUERY_REPEATS:-3}
 QUERY_FILE=${QUERY_FILE:-}
 DB_NAME_SUFFIX=${DB_NAME_SUFFIX:-}
@@ -28,7 +32,8 @@ CLICKHOUSE_BIN=${CLICKHOUSE_BIN:-/mnt/fastdata/clickhouse}
 
 usage() {
     echo "usage: $0 matrixone|clickhouse [--skip-load] [--query-repeats N]"
-    echo "env: USE_CASE=cpu-only|devops|iot, PREPARED_DIR, RESULT_ROOT, LOG_ROOT"
+    echo "env: USE_CASE=cpu-only|devops|iot, TSBS_DATA_ROOT, PREPARED_DIR"
+    echo "     TSBS_RESULT_ROOT, TSBS_LOG_ROOT, RESULT_ROOT, LOG_ROOT"
     echo "     MO_HOST/MO_PORT/MO_USER/MO_PASSWORD"
     echo "     CH_HOST/CH_PORT/CH_USER/CH_PASSWORD, MYSQL_BIN, CLICKHOUSE_BIN"
 }

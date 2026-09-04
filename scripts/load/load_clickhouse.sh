@@ -9,6 +9,7 @@ fi
 
 # Load parameters - common
 DATA_FILE_NAME=${DATA_FILE_NAME:-clickhouse-data.gz}
+DATABASE_PORT=${DATABASE_PORT:-9000}
 DATABASE_USER=${DATABASE_USER:-default}
 DATABASE_PASSWORD=${DATABASE_PASSWORD:-""}
 

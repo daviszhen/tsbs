@@ -23,6 +23,528 @@ For a local MatrixOne-versus-ClickHouse run using the deterministic TSBS
 adapter uses the TSBS generator and portable prepared CSV while keeping the
 database-specific load and query paths separate.
 
+## External benchmark artifacts
+
+Benchmark data and generated query archives do not need to live in the source
+tree. The scripts accept these environment variables (the old
+`BULK_DATA_DIR`/`DATA_ROOT` names remain compatible):
+
+```bash
+export TSBS_ROOT=/mnt/fastdata/tsbs
+export TSBS_DATA_ROOT=/data/tsbs-data/scale4000_3d_10s_seed123
+export TSBS_QUERY_ROOT=/data/tsbs-queries/scale4000_3d_10s_seed123
+export TSBS_RESULT_ROOT=/data/tsbs-results/scale4000_3d_10s_seed123
+export TSBS_LOG_ROOT=/data/tsbs-logs/scale4000_3d_10s_seed123
+```
+
+`TSBS_DATA_ROOT` is used by data generation, generic loaders, and the local
+MatrixOne/ClickHouse adapter. `TSBS_QUERY_ROOT` is used by query generation and
+the ClickHouse/InfluxDB query wrappers. `TSBS_RESULT_ROOT` controls query
+outputs, while the local adapter uses `TSBS_LOG_ROOT` for stderr and load logs.
+The defaults preserve the historical `/tmp/bulk_data`, `/tmp/bulk_queries`, and
+repository-local result locations.
+
+## MatrixOne, ClickHouse, and InfluxDB: separate test procedures
+
+The three databases use different input formats. Do not feed a ClickHouse
+archive to the InfluxDB loader, or an InfluxDB line-protocol archive to the
+MatrixOne adapter:
+
+| Database | Test entry point | Input artifact |
+|---|---|---|
+| MatrixOne | `matrixone/run_benchmark.sh matrixone` | ClickHouse-format TSBS archive, converted to prepared CSV |
+| ClickHouse | `matrixone/run_benchmark.sh clickhouse` | The same prepared CSV as MatrixOne |
+| InfluxDB | `scripts/load/load_influx.sh` and `scripts/run_queries/run_queries_influx.sh` | Native InfluxDB TSBS archive |
+
+The custom MatrixOne/ClickHouse adapter is intended for a reproducible
+cross-engine comparison. The upstream InfluxDB scripts are kept separate
+because InfluxDB has a different line-protocol format.
+
+### 1. Common environment
+
+Run this once in the shell that will execute the benchmark. The data, query,
+result, and log roots are examples and can be changed independently. The
+`TSBS_DATA_ROOT` value below is the exact dataset directory, not the source
+checkout:
+
+```bash
+set -euo pipefail
+
+export TSBS_ROOT=/mnt/fastdata/tsbs
+export DATASET_ID=scale4000_3d_10s_seed123
+export TSBS_DATASET_ID="$DATASET_ID"
+
+# Artifacts outside the source tree.
+export TSBS_DATA_ROOT=/data1/pengzhen/tsbs_data/${DATASET_ID}
+export TSBS_QUERY_ROOT=/data1/pengzhen/tsbs_queries/${DATASET_ID}
+export TSBS_RESULT_ROOT=/data1/pengzhen/tsbs_results/${DATASET_ID}
+export TSBS_LOG_ROOT=/data1/pengzhen/tsbs_logs/${DATASET_ID}
+export DB_NAME_SUFFIX="_${DATASET_ID}"
+
+# Deterministic TSBS generation parameters.
+export SCALE=4000
+export SEED=123
+export TS_START=2026-01-01T00:00:00Z
+export TS_END=2026-01-04T00:00:00Z
+export QUERY_TS_END=2026-01-04T00:00:01Z
+export LOG_INTERVAL=10s
+export QUERY_REPEATS=3
+
+mkdir -p "$TSBS_DATA_ROOT" "$TSBS_QUERY_ROOT" \
+  "$TSBS_RESULT_ROOT" "$TSBS_LOG_ROOT"
+```
+
+The equivalent formal profile can be sourced before overriding the four path
+variables:
+
+```bash
+set -euo pipefail
+source "$TSBS_ROOT/matrixone/benchmark_profiles/tsbs_reference_scale4000_3d_10s.env"
+export TSBS_DATA_ROOT=/data1/pengzhen/tsbs_data/tsbs-reference-scale4000-3d-10s-seed123
+export TSBS_QUERY_ROOT=/data1/pengzhen/tsbs_queries/tsbs-reference-scale4000-3d-10s-seed123
+export TSBS_RESULT_ROOT=/data1/pengzhen/tsbs_results/tsbs-reference-scale4000-3d-10s-seed123
+export TSBS_LOG_ROOT=/data1/pengzhen/tsbs_logs/tsbs-reference-scale4000-3d-10s-seed123
+
+# Aliases consumed by the standalone commands below.
+export DATASET_ID="$TSBS_DATASET_ID"
+export SCALE="$TSBS_SCALE"
+export SEED="$TSBS_SEED"
+export TS_START="$TSBS_TIMESTAMP_START"
+export TS_END="$TSBS_TIMESTAMP_END"
+export QUERY_TS_END="$TSBS_QUERY_TIMESTAMP_END"
+export LOG_INTERVAL="$TSBS_LOG_INTERVAL"
+export DB_NAME_SUFFIX="$TSBS_DB_NAME_SUFFIX"
+export QUERY_REPEATS="${QUERY_REPEATS:-3}"
+mkdir -p "$TSBS_DATA_ROOT" "$TSBS_QUERY_ROOT" \
+  "$TSBS_RESULT_ROOT" "$TSBS_LOG_ROOT"
+```
+
+The five cross-engine comparison queries are the checked-in SQL TSV files in
+`matrixone/` (one file per database and use case).  The generic TSBS query
+archives generated later in this section are a separate, 1,000-query-per-shape
+workload for the upstream database runners; they are not silently substituted
+for the five-query MatrixOne/ClickHouse comparison set.  The adapter reads each
+TSV from top to bottom: Q1 through Q5 are executed sequentially, and each query
+is repeated `QUERY_REPEATS` times with no concurrent query workers.
+
+Build the binaries used by the upstream ClickHouse/InfluxDB scripts if they
+are not already present:
+
+```bash
+cd "$TSBS_ROOT"
+docker run --rm \
+  -v "$TSBS_ROOT:/src" \
+  -v /home/pengzhen/go/pkg/mod:/go/pkg/mod \
+  -w /src matrixorigin/golang:1.26.4-ubuntu22.04 bash -lc '
+    export GOMODCACHE=/go/pkg/mod
+    export GOPROXY=file:///go/pkg/mod/cache/download GOSUMDB=off
+    go build -buildvcs=false -o bin/tsbs_generate_data ./cmd/tsbs_generate_data
+    go build -buildvcs=false -o bin/tsbs_generate_queries ./cmd/tsbs_generate_queries
+    go build -buildvcs=false -o bin/tsbs_load_clickhouse ./cmd/tsbs_load_clickhouse
+    go build -buildvcs=false -o bin/tsbs_load_influx ./cmd/tsbs_load_influx
+    go build -buildvcs=false -o bin/tsbs_run_queries_clickhouse ./cmd/tsbs_run_queries_clickhouse
+    go build -buildvcs=false -o bin/tsbs_run_queries_influx ./cmd/tsbs_run_queries_influx
+  '
+```
+
+### 2. Generate or verify external data
+
+The MatrixOne/ClickHouse adapter requires one ClickHouse-format archive per use
+case. Generate only the archive that is missing; existing archives are not
+overwritten by this command unless the output path is explicitly reused:
+
+```bash
+cd "$TSBS_ROOT"
+for use_case in cpu-only devops iot; do
+  output="$TSBS_DATA_ROOT/clickhouse_${use_case}_${DATASET_ID}.dat.gz"
+  if [[ ! -f "$output" ]]; then
+    partial="${output}.partial.$$"
+    if ! bin/tsbs_generate_data \
+        --format clickhouse --use-case "$use_case" --scale "$SCALE" \
+        --timestamp-start "$TS_START" --timestamp-end "$TS_END" \
+        --log-interval "$LOG_INTERVAL" --seed "$SEED" --max-data-points 0 \
+        | gzip -c > "$partial"; then
+      rm -f "$partial"
+      exit 1
+    fi
+    mv "$partial" "$output"
+  fi
+done
+```
+
+InfluxDB needs a separate native archive. Keep it in the same external data
+directory or in a separate directory and pass the exact file with `DATA_FILE`:
+
+```bash
+for use_case in cpu-only devops iot; do
+  output="$TSBS_DATA_ROOT/influx_${use_case}_${DATASET_ID}.dat.gz"
+  if [[ ! -f "$output" ]]; then
+    partial="${output}.partial.$$"
+    if ! bin/tsbs_generate_data \
+        --format influx --use-case "$use_case" --scale "$SCALE" \
+        --timestamp-start "$TS_START" --timestamp-end "$TS_END" \
+        --log-interval "$LOG_INTERVAL" --seed "$SEED" --max-data-points 0 \
+        | gzip -c > "$partial"; then
+      rm -f "$partial"
+      exit 1
+    fi
+    mv "$partial" "$output"
+  fi
+done
+```
+
+Check the external files before loading:
+
+```bash
+find "$TSBS_DATA_ROOT" -maxdepth 1 -type f -name '*.dat.gz' -printf '%f %s bytes\n' | sort
+```
+
+To reuse an archive generated on another host, copy it into the external data
+root; do not copy it into the source checkout and do not delete the source
+archive after the copy:
+
+```bash
+rsync -aH --partial --info=progress2 \
+  /source/tsbs-data/scale4000_3d_10s_seed123/ \
+  "$TSBS_DATA_ROOT/"
+```
+
+After a partial transfer, remove only the explicitly named `*.partial` files
+before retrying.  The benchmark scripts never remove the source archives.
+
+The loaders do not modify these archives. MatrixOne preparation writes only
+to `prepared-<use-case>` below `TSBS_DATA_ROOT`:
+
+```bash
+cd "$TSBS_ROOT"
+for use_case in cpu-only devops iot; do
+  source_file="$TSBS_DATA_ROOT/clickhouse_${use_case}_${DATASET_ID}.dat.gz"
+  prepared_dir="$TSBS_DATA_ROOT/prepared-${use_case}"
+  if [[ ! -f "$prepared_dir/metadata.json" ]]; then
+    python3 matrixone/prepare_data.py \
+      --source "$source_file" --output "$prepared_dir"
+  fi
+done
+```
+
+### 3. Test MatrixOne only
+
+MatrixOne must be running and reachable through its MySQL protocol.  If it is
+already managed by a service or a test harness, skip the start block.  For a
+local binary, the following is a complete example; adjust `MO_ROOT` and the
+launch file for the installation being tested:
+
+```bash
+export MO_ROOT=/mnt/fastdata/matrixone
+export MO_SERVICE="$MO_ROOT/mo-service"
+export MO_LAUNCH="$MO_ROOT/etc/launch/launch.toml"
+export MO_SERVICE_LOG="$TSBS_LOG_ROOT/matrixone/service.log"
+mkdir -p "$(dirname "$MO_SERVICE_LOG")"
+
+cd "$MO_ROOT"
+nohup env LD_LIBRARY_PATH="$MO_ROOT/cgo:$MO_ROOT/thirdparties/install/lib:${LD_LIBRARY_PATH:-}" \
+  "$MO_SERVICE" -launch "$MO_LAUNCH" >"$MO_SERVICE_LOG" 2>&1 &
+```
+
+Configure the endpoint and the MySQL client explicitly, then wait for the
+same endpoint that the benchmark will use:
+
+```bash
+export MO_HOST=127.0.0.1
+export MO_PORT=6001
+export MO_USER=root
+export MO_PASSWORD=111
+export MYSQL_BIN=mysql
+
+until "$MYSQL_BIN" --protocol=tcp -h"$MO_HOST" -P"$MO_PORT" -u"$MO_USER" \
+  --connect-timeout=3 -p"$MO_PASSWORD" -e 'SELECT 1' >/dev/null 2>&1; do
+  sleep 1
+done
+"$MYSQL_BIN" --protocol=tcp -h"$MO_HOST" -P"$MO_PORT" -u"$MO_USER" \
+  --connect-timeout=10 -p"$MO_PASSWORD" -e 'SELECT VERSION()'
+```
+
+Do not put a password in a committed profile.  `MO_PASSWORD` may instead be
+provided through a protected shell environment or `MYSQL_PWD`.
+
+Run one use case at a time. This command creates/recreates the dedicated
+benchmark database `tsbs_matrixone_<use-case>_scale4000_3d_10s_seed123`, loads
+the prepared CSV, checks row counts, and executes the five adapter queries for
+each requested repetition:
+
+```bash
+export USE_CASE=cpu-only
+export PREPARED_DIR="$TSBS_DATA_ROOT/prepared-${USE_CASE}"
+export QUERY_FILE="$TSBS_ROOT/matrixone/queries_${USE_CASE}_matrixone_${DATASET_ID}.tsv"
+export RESULT_ROOT="$TSBS_RESULT_ROOT/matrixone/${USE_CASE}"
+export LOG_ROOT="$TSBS_LOG_ROOT/matrixone/${USE_CASE}"
+
+cd "$TSBS_ROOT"
+TSBS_ROOT="$TSBS_ROOT" \
+TSBS_DATA_ROOT="$TSBS_DATA_ROOT" \
+USE_CASE="$USE_CASE" PREPARED_DIR="$PREPARED_DIR" \
+QUERY_FILE="$QUERY_FILE" RESULT_ROOT="$RESULT_ROOT" LOG_ROOT="$LOG_ROOT" \
+DB_NAME_SUFFIX="$DB_NAME_SUFFIX" \
+MO_HOST="$MO_HOST" MO_PORT="$MO_PORT" MO_USER="$MO_USER" \
+MO_PASSWORD="$MO_PASSWORD" MYSQL_BIN="$MYSQL_BIN" \
+  bash matrixone/run_benchmark.sh matrixone --query-repeats "$QUERY_REPEATS"
+```
+
+Run `USE_CASE=devops` or `USE_CASE=iot` in separate invocations. To rerun
+queries without reloading data, add `--skip-load` while retaining the same
+`PREPARED_DIR`, `RESULT_ROOT`, `LOG_ROOT`, and `QUERY_FILE` values:
+
+```bash
+USE_CASE=cpu-only PREPARED_DIR="$TSBS_DATA_ROOT/prepared-cpu-only" \
+QUERY_FILE="$TSBS_ROOT/matrixone/queries_cpu-only_matrixone_${DATASET_ID}.tsv" \
+RESULT_ROOT="$TSBS_RESULT_ROOT/matrixone/cpu-only-rerun" \
+LOG_ROOT="$TSBS_LOG_ROOT/matrixone/cpu-only-rerun" \
+  bash "$TSBS_ROOT/matrixone/run_benchmark.sh" matrixone \
+    --skip-load --query-repeats 3
+```
+
+Outputs are written to `RESULT_ROOT`:
+
+- `matrixone_load.tsv`: schema, tags, metric, and total load time;
+- `matrixone_row_counts.tsv`: row counts for tags and metric tables;
+- `matrixone_summary.tsv`: per-query latency and row count;
+- `matrixone_<query>_r<n>.tsv`: query result sets.
+
+Errors and client stderr are written below `LOG_ROOT`.
+
+### 4. Test ClickHouse only
+
+The custom ClickHouse test uses the same prepared CSV as the MatrixOne test,
+so no second data conversion is needed. Configure the native ClickHouse
+endpoint and client.  If ClickHouse is not already managed by systemd, this is
+the reproducible container setup used by the local harness (the image must be
+the pinned image approved for the comparison; record its server version below):
+
+```bash
+export CH_CONTAINER=tsbs-clickhouse
+export CH_IMAGE=63a3278e83e1
+export CH_DATA_DIR=/data1/pengzhen/clickhouse-data
+export CH_LOG_DIR=/data1/pengzhen/clickhouse-logs
+mkdir -p "$CH_DATA_DIR" "$CH_LOG_DIR"
+
+if ! docker inspect "$CH_CONTAINER" >/dev/null 2>&1; then
+  docker run -d --name "$CH_CONTAINER" \
+    --ulimit nofile=262144:262144 \
+    -e CLICKHOUSE_USER=tsbs -e CLICKHOUSE_PASSWORD=tsbs \
+    -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+    -p 9000:9000 -p 8123:8123 \
+    -v "$CH_DATA_DIR:/var/lib/clickhouse" \
+    -v "$CH_LOG_DIR:/var/log/clickhouse-server" \
+    "$CH_IMAGE"
+else
+  docker start "$CH_CONTAINER" >/dev/null || true
+fi
+```
+
+Configure the endpoint and client, and record the actual version before
+comparing results:
+
+```bash
+export CH_HOST=127.0.0.1
+export CH_PORT=9000
+export CH_USER=tsbs
+export CH_PASSWORD=tsbs
+export CLICKHOUSE_BIN=/mnt/fastdata/clickhouse
+
+until "$CLICKHOUSE_BIN" client --host "$CH_HOST" --port "$CH_PORT" \
+  --user "$CH_USER" --password "$CH_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1; do
+  sleep 1
+done
+"$CLICKHOUSE_BIN" client --host "$CH_HOST" --port "$CH_PORT" \
+  --user "$CH_USER" --password "$CH_PASSWORD" --query 'SELECT version()'
+```
+
+Run the ClickHouse adapter independently for one use case:
+
+```bash
+export USE_CASE=cpu-only
+export PREPARED_DIR="$TSBS_DATA_ROOT/prepared-${USE_CASE}"
+export QUERY_FILE="$TSBS_ROOT/matrixone/queries_${USE_CASE}_clickhouse_${DATASET_ID}.tsv"
+export RESULT_ROOT="$TSBS_RESULT_ROOT/clickhouse/${USE_CASE}"
+export LOG_ROOT="$TSBS_LOG_ROOT/clickhouse/${USE_CASE}"
+
+cd "$TSBS_ROOT"
+TSBS_ROOT="$TSBS_ROOT" \
+TSBS_DATA_ROOT="$TSBS_DATA_ROOT" \
+USE_CASE="$USE_CASE" PREPARED_DIR="$PREPARED_DIR" \
+QUERY_FILE="$QUERY_FILE" RESULT_ROOT="$RESULT_ROOT" LOG_ROOT="$LOG_ROOT" \
+DB_NAME_SUFFIX="$DB_NAME_SUFFIX" \
+CH_HOST="$CH_HOST" CH_PORT="$CH_PORT" CH_USER="$CH_USER" \
+CH_PASSWORD="$CH_PASSWORD" CLICKHOUSE_BIN="$CLICKHOUSE_BIN" \
+  bash matrixone/run_benchmark.sh clickhouse --query-repeats "$QUERY_REPEATS"
+```
+
+For the upstream ClickHouse format instead of the custom adapter, use the
+generic scripts and pass the exact archive and database name.  Generate the
+native ClickHouse query archives first (this does not modify the data archive):
+
+```bash
+cd "$TSBS_ROOT"
+TSBS_QUERY_ROOT="$TSBS_QUERY_ROOT" \
+BULK_DATA_DIR="$TSBS_QUERY_ROOT" FORMATS=clickhouse USE_CASE="$USE_CASE" \
+SCALE="$SCALE" SEED="$SEED" TS_START="$TS_START" \
+TS_END="$QUERY_TS_END" QUERIES=1000 \
+  scripts/generate_queries.sh
+```
+
+Then load and run the generated files:
+
+```bash
+export DATA_FILE="$TSBS_DATA_ROOT/clickhouse_${USE_CASE}_${DATASET_ID}.dat.gz"
+export DATABASE_NAME="tsbs_clickhouse_${USE_CASE//-/_}_${DATASET_ID}"
+export DATABASE_HOST="$CH_HOST"
+export DATABASE_PORT="$CH_PORT"
+export DATABASE_USER="$CH_USER"
+export DATABASE_PASSWORD="$CH_PASSWORD"
+export EXE_FILE_NAME="$TSBS_ROOT/bin/tsbs_load_clickhouse"
+export NUM_WORKERS=16
+export BATCH_SIZE=10000
+
+cd "$TSBS_ROOT"
+EXE_FILE_NAME="$EXE_FILE_NAME" DATA_FILE="$DATA_FILE" \
+DATABASE_NAME="$DATABASE_NAME" DATABASE_HOST="$DATABASE_HOST" \
+DATABASE_PORT="$DATABASE_PORT" DATABASE_USER="$DATABASE_USER" \
+DATABASE_PASSWORD="$DATABASE_PASSWORD" NUM_WORKERS="$NUM_WORKERS" \
+BATCH_SIZE="$BATCH_SIZE" scripts/load/load_clickhouse.sh
+
+mapfile -t CH_QUERY_FILES < <(
+  find "$TSBS_QUERY_ROOT" -maxdepth 1 -type f \
+    -name "queries_clickhouse_*_${USE_CASE}.dat.gz" -print | sort
+)
+[[ ${#CH_QUERY_FILES[@]} -gt 0 ]] || {
+  echo "no ClickHouse query archives found for ${USE_CASE}" >&2
+  exit 1
+}
+EXE_FILE_NAME="$TSBS_ROOT/bin/tsbs_run_queries_clickhouse" \
+TSBS_QUERY_ROOT="$TSBS_QUERY_ROOT" \
+TSBS_RESULT_ROOT="$TSBS_RESULT_ROOT/clickhouse-upstream/${USE_CASE}" \
+DATABASE_NAME="$DATABASE_NAME" DATABASE_HOST="$DATABASE_HOST" \
+DATABASE_PORT="$DATABASE_PORT" DATABASE_USER="$DATABASE_USER" \
+DATABASE_PASSWORD="$DATABASE_PASSWORD" MAX_QUERIES=1000 NUM_WORKERS=1 \
+  scripts/run_queries/run_queries_clickhouse.sh "${CH_QUERY_FILES[@]}"
+```
+
+The custom adapter is preferred for MatrixOne-versus-ClickHouse result
+comparison. The upstream loader/query runner is useful when comparing TSBS's
+native ClickHouse path with other TSBS database targets.
+
+### 5. Test InfluxDB only
+
+Start or verify InfluxDB 1.x at the configured HTTP endpoint. The following
+example keeps the InfluxDB storage outside the TSBS checkout.  If a container
+with this name already exists, start it instead of creating a second one:
+
+```bash
+export INFLUX_URL=http://127.0.0.1:8086
+export INFLUX_DATA_DIR=/data1/pengzhen/influxdb-data
+mkdir -p "$INFLUX_DATA_DIR"
+
+if ! docker inspect tsbs-influxdb-1.8 >/dev/null 2>&1; then
+  docker run -d --name tsbs-influxdb-1.8 \
+    -p 8086:8086 \
+    -v "$INFLUX_DATA_DIR:/var/lib/influxdb" \
+    influxdb:1.8.10
+else
+  docker start tsbs-influxdb-1.8 >/dev/null || true
+fi
+
+until curl -fsS "$INFLUX_URL/ping" >/dev/null; do
+  sleep 1
+done
+curl -fsSI "$INFLUX_URL/ping"
+```
+
+Load one native InfluxDB archive. `DATA_FILE` takes precedence over
+`TSBS_DATA_ROOT`, which avoids relying on the short `influx-data.gz` symlink:
+
+```bash
+export USE_CASE=cpu-only
+export DATABASE_NAME="tsbs_influx_${USE_CASE//-/_}_${DATASET_ID}"
+export DATA_FILE="$TSBS_DATA_ROOT/influx_${USE_CASE}_${DATASET_ID}.dat.gz"
+export EXE_FILE_NAME="$TSBS_ROOT/bin/tsbs_load_influx"
+export DATABASE_HOST=127.0.0.1
+export DATABASE_PORT=8086
+export NUM_WORKERS=16
+export BATCH_SIZE=10000
+export BACKOFF_SECS=1s
+export REPORTING_PERIOD=10s
+
+cd "$TSBS_ROOT"
+EXE_FILE_NAME="$EXE_FILE_NAME" DATA_FILE="$DATA_FILE" \
+DATABASE_NAME="$DATABASE_NAME" DATABASE_HOST="$DATABASE_HOST" \
+DATABASE_PORT="$DATABASE_PORT" INFLUX_URL="$INFLUX_URL" \
+NUM_WORKERS="$NUM_WORKERS" BATCH_SIZE="$BATCH_SIZE" \
+BACKOFF_SECS="$BACKOFF_SECS" REPORTING_PERIOD="$REPORTING_PERIOD" \
+  scripts/load/load_influx.sh \
+  2>&1 | tee "$TSBS_LOG_ROOT/influx-${USE_CASE}-load.log"
+```
+
+Generate native InfluxDB query archives if they are not already available:
+
+```bash
+cd "$TSBS_ROOT"
+TSBS_QUERY_ROOT="$TSBS_QUERY_ROOT" \
+BULK_DATA_DIR="$TSBS_QUERY_ROOT" FORMATS=influx USE_CASE="$USE_CASE" \
+SCALE="$SCALE" SEED="$SEED" TS_START="$TS_START" \
+TS_END="$QUERY_TS_END" QUERIES=1000 \
+  scripts/generate_queries.sh
+```
+
+Run the query archive against the same database and write results outside the
+query directory:
+
+```bash
+mapfile -t INFLUX_QUERY_FILES < <(
+  find "$TSBS_QUERY_ROOT" -maxdepth 1 -type f \
+    -name "queries_influx_*_${USE_CASE}.dat.gz" -print | sort
+)
+[[ ${#INFLUX_QUERY_FILES[@]} -gt 0 ]] || {
+  echo "no InfluxDB query archives found for ${USE_CASE}" >&2
+  exit 1
+}
+EXE_FILE_NAME="$TSBS_ROOT/bin/tsbs_run_queries_influx" \
+TSBS_QUERY_ROOT="$TSBS_QUERY_ROOT" \
+TSBS_RESULT_ROOT="$TSBS_RESULT_ROOT/influx/${USE_CASE}" \
+DATABASE_NAME="$DATABASE_NAME" INFLUX_URL="$INFLUX_URL" \
+MAX_QUERIES=1000 NUM_WORKERS=1 \
+  scripts/run_queries/run_queries_influx.sh \
+  "${INFLUX_QUERY_FILES[@]}" 2>&1 \
+  | tee "$TSBS_LOG_ROOT/influx-${USE_CASE}-queries.log"
+```
+
+The query archive names contain the query shape, generator version, count,
+scale, seed, time range, and use case.  The `find` patterns therefore select
+all generated shapes for the selected use case without depending on a short
+symlink.  The wrapper passes `--db-name` and `--urls` to
+`tsbs_run_queries_influx`, so the query database and endpoint match the load
+command.
+
+InfluxDB loading drops the configured benchmark database before loading. Use a
+dedicated `DATABASE_NAME`; the external archive and query files themselves are
+not deleted or modified.
+
+### 6. Results and cleanup
+
+For separate runs, keep the following layout:
+
+```text
+/mnt/fastdata/tsbs/                         # source checkout and scripts
+/data1/pengzhen/tsbs_data/<dataset>/         # archives and prepared CSV
+/data1/pengzhen/tsbs_queries/<dataset>/      # generated query archives
+/data1/pengzhen/tsbs_results/<dataset>/      # result TSV/summary files
+/data1/pengzhen/tsbs_logs/<dataset>/         # load/query logs
+```
+
+Do not remove the external data root after a test if the dataset will be
+reused. The custom MatrixOne/ClickHouse runner only recreates its benchmark
+database; the InfluxDB loader only drops its configured benchmark database.
+Use `--skip-load` for query-only reruns when the database is still available.
+
 ## Overview
 
 The **Time Series Benchmark Suite (TSBS)** is a collection of Go

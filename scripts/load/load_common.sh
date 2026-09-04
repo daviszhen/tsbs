@@ -5,8 +5,9 @@ DATABASE_HOST=${DATABASE_HOST:-"localhost"}
 DATABASE_NAME=${DATABASE_NAME:-"benchmark"}
 PORT=${PORT:-5432}
 
-# Data folder
-BULK_DATA_DIR=${BULK_DATA_DIR:-"/tmp/bulk_data"}
+# Data folder. TSBS_DATA_ROOT is the external-data contract; retain
+# BULK_DATA_DIR for compatibility with the upstream scripts.
+BULK_DATA_DIR=${BULK_DATA_DIR:-${TSBS_DATA_ROOT:-"/tmp/bulk_data"}}
 # Full path to data file
 DATA_FILE=${DATA_FILE:-${BULK_DATA_DIR}/${DATA_FILE_NAME}}
 

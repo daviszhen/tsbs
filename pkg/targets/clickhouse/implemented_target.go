@@ -26,6 +26,7 @@ func (c clickhouseTarget) Serializer() serialize.PointSerializer {
 
 func (c clickhouseTarget) TargetSpecificFlags(flagPrefix string, flagSet *pflag.FlagSet) {
 	flagSet.String(flagPrefix+"host", "localhost", "Hostname of ClickHouse instance")
+	flagSet.Int(flagPrefix+"port", 9000, "Native TCP port of ClickHouse instance")
 	flagSet.String(flagPrefix+"user", "default", "User to connect to ClickHouse as")
 	flagSet.String(flagPrefix+"password", "", "Password to connect to ClickHouse")
 	flagSet.Bool(flagPrefix+"log-batches", false, "Whether to time individual batches.")

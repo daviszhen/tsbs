@@ -14,6 +14,7 @@ const dbType = "clickhouse"
 
 type ClickhouseConfig struct {
 	Host     string
+	Port     int
 	User     string
 	Password string
 
@@ -42,11 +43,15 @@ func getConnectString(conf *ClickhouseConfig, db bool) string {
 	// connectString: tcp://127.0.0.1:9000?debug=true
 	// ClickHouse ex.:
 	// tcp://host1:9000?username=user&password=qwerty&database=clicks&read_timeout=10&write_timeout=20&alt_hosts=host2:9000,host3:9000
+	port := conf.Port
+	if port == 0 {
+		port = 9000
+	}
 	if db {
-		return fmt.Sprintf("tcp://%s:9000?username=%s&password=%s&database=%s", conf.Host, conf.User, conf.Password, conf.DbName)
+		return fmt.Sprintf("tcp://%s:%d?username=%s&password=%s&database=%s", conf.Host, port, conf.User, conf.Password, conf.DbName)
 	}
 
-	return fmt.Sprintf("tcp://%s:9000?username=%s&password=%s", conf.Host, conf.User, conf.Password)
+	return fmt.Sprintf("tcp://%s:%d?username=%s&password=%s", conf.Host, port, conf.User, conf.Password)
 }
 
 // Point is a single row of data keyed by which table it belongs

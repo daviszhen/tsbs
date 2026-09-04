@@ -24,6 +24,7 @@ var (
 	hostsList []string
 	user      string
 	password  string
+	port      int
 
 	showExplain bool
 )
@@ -43,6 +44,7 @@ func init() {
 		"String of additional ClickHouse connection parameters, e.g., 'sslmode=disable'.")
 	pflag.String("hosts", "localhost",
 		"Comma separated list of ClickHouse hosts (pass multiple values for sharding reads on a multi-node setup)")
+	pflag.Int("port", 9000, "ClickHouse native TCP port")
 	pflag.String("user", "default", "User to connect to ClickHouse as")
 	pflag.String("password", "", "Password to connect to ClickHouse")
 
@@ -60,6 +62,7 @@ func init() {
 
 	chConnect = viper.GetString("additional-params")
 	hosts = viper.GetString("hosts")
+	port = viper.GetInt("port")
 	user = viper.GetString("user")
 	password = viper.GetString("password")
 
@@ -84,7 +87,7 @@ func getConnectString(workerNumber int) string {
 	// Round robin the host/worker assignment by assigning a host based on workerNumber % totalNumberOfHosts
 	host := hostsList[workerNumber%len(hostsList)]
 
-	return fmt.Sprintf("tcp://%s:9000?username=%s&password=%s&database=%s", host, user, password, runner.DatabaseName())
+	return fmt.Sprintf("tcp://%s:%d?username=%s&password=%s&database=%s", host, port, user, password, runner.DatabaseName())
 }
 
 // prettyPrintResponse prints a Query and its response in JSON format with two

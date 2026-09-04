@@ -25,8 +25,25 @@ generates modern DDL instead of modifying the upstream benchmark semantics.
 - `run_local.sh` runs preparation (if needed), all selected database tests, and
   result validation sequentially.
 
-All generated data, logs, and results belong below `/mnt/fastdata/tsbs` by
-default.  The source archive is not modified.
+The source tree and benchmark artifacts are separate. By default the scripts
+retain their historical locations below `TSBS_ROOT`, but every path can be
+overridden through environment variables:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `TSBS_ROOT` | TSBS source tree and scripts | repository root |
+| `TSBS_DATA_ROOT` | One dataset directory containing source archives and `prepared-*` | `TSBS_ROOT/data/baseline-scale100-1d` |
+| `TSBS_QUERY_ROOT` | Generic TSBS query archive directory | `/tmp/bulk_queries` |
+| `TSBS_RESULT_ROOT` | Result base directory | `TSBS_ROOT/results` |
+| `TSBS_LOG_ROOT` | Log base directory | `TSBS_ROOT/logs` |
+
+`DATA_ROOT`, `BULK_DATA_DIR`, `RESULT_ROOT`, and `LOG_ROOT` remain supported as
+backwards-compatible per-script overrides. The source archive is never
+modified by preparation.
+
+`benchmark_profiles/tsbs_external_paths.env.example` is a ready-to-copy
+template for these variables and the three database endpoints. Keep credentials
+in the shell environment or a machine-local file, not in a committed profile.
 
 ## Build TSBS tools
 
@@ -44,28 +61,33 @@ docker run --rm \
     export GOMODCACHE=/go/pkg/mod GOPROXY=file:///go/pkg/mod/cache/download GOSUMDB=off
     go build -buildvcs=false -o bin/tsbs_generate_data ./cmd/tsbs_generate_data
     go build -buildvcs=false -o bin/tsbs_generate_queries ./cmd/tsbs_generate_queries
+    go build -buildvcs=false -o bin/tsbs_load_clickhouse ./cmd/tsbs_load_clickhouse
+    go build -buildvcs=false -o bin/tsbs_load_influx ./cmd/tsbs_load_influx
+    go build -buildvcs=false -o bin/tsbs_run_queries_clickhouse ./cmd/tsbs_run_queries_clickhouse
+    go build -buildvcs=false -o bin/tsbs_run_queries_influx ./cmd/tsbs_run_queries_influx
   '
 ```
 
 ## Generate deterministic data
 
 The checked baseline uses 100 hosts/trucks for one day at a 10-second interval.
-The three deterministic sources are stored under
-`data/baseline-scale100-1d/`; each has a corresponding `prepared-*` directory.
-For example, generate the `cpu-only` source with:
+Set `TSBS_DATA_ROOT` to the directory where the generated sources should live;
+it may be outside this repository. Each source has a corresponding `prepared-*`
+directory. For example, generate the `cpu-only` source with:
 
 ```bash
-mkdir -p data/baseline-scale100-1d
+export TSBS_DATA_ROOT=/data/tsbs-data/baseline-scale100-1d
+mkdir -p "$TSBS_DATA_ROOT"
 bin/tsbs_generate_data \
   --format clickhouse --use-case cpu-only --scale 100 \
   --timestamp-start 2026-01-01T00:00:00Z \
   --timestamp-end 2026-01-02T00:00:00Z \
   --log-interval 10s --seed 123 --max-data-points 0 \
-  | gzip -c > data/baseline-scale100-1d/clickhouse_cpu-only_scale100_1d_10s_seed123.dat.gz
+  | gzip -c > "$TSBS_DATA_ROOT/clickhouse_cpu-only_scale100_1d_10s_seed123.dat.gz"
 
 python3 matrixone/prepare_data.py \
-  --source data/baseline-scale100-1d/clickhouse_cpu-only_scale100_1d_10s_seed123.dat.gz \
-  --output data/baseline-scale100-1d/prepared-cpu-only
+  --source "$TSBS_DATA_ROOT/clickhouse_cpu-only_scale100_1d_10s_seed123.dat.gz" \
+  --output "$TSBS_DATA_ROOT/prepared-cpu-only"
 ```
 
 Use `--use-case devops` or `--use-case iot` to generate the other sources.
@@ -106,13 +128,19 @@ ClickHouse connection variables with `CH_HOST`, `CH_PORT`, `CH_USER`, and
 
 ```bash
 cd /mnt/fastdata/tsbs
-QUERY_REPEATS=1 USE_CASES='cpu-only devops iot' matrixone/run_local.sh
+TSBS_DATA_ROOT=/data/tsbs-data/baseline-scale100-1d \
+TSBS_RESULT_ROOT=/data/tsbs-results \
+TSBS_LOG_ROOT=/data/tsbs-logs \
+QUERY_REPEATS=1 USE_CASES='cpu-only devops iot' \
+  matrixone/run_local.sh
 ```
 
 The run is sequential for each use case: MatrixOne is loaded and queried, then
-ClickHouse is loaded and queried.  `results/tsbs_local/<use-case>/` contains
-load timing tables, per-query timing summaries, row counts, and TSV result sets.
-`logs/tsbs_local/<use-case>/` contains database load logs and per-query stderr.
+ClickHouse is loaded and queried.  `${TSBS_RESULT_ROOT}/tsbs_local/<use-case>/`
+contains load timing tables, per-query timing summaries, row counts, and TSV
+result sets. `${TSBS_LOG_ROOT}/tsbs_local/<use-case>/` contains database load
+logs and per-query stderr. With the defaults these resolve to
+`TSBS_ROOT/results` and `TSBS_ROOT/logs`.
 Validation fails if a query errors, a deterministic row count is wrong, or the
 normalized MatrixOne and ClickHouse result sets differ.  To run one use case,
 set `USE_CASES='iot'`.
@@ -140,7 +168,9 @@ single-node setup is not tuned for either engine.
 
 ## TSBS reference-scale comparison
 
-The formal comparison profile is kept separate from the smoke baseline:
+The formal comparison profile is kept separate from the smoke baseline. Keep
+its source and prepared data outside the repository by setting
+`TSBS_DATA_ROOT`:
 
 ```text
 scale=4000
@@ -155,8 +185,7 @@ query repeats=3
 
 The reproducible environment values are in
 `benchmark_profiles/tsbs_reference_scale4000_3d_10s.env`. The generated
-source and prepared data use
-`data/tsbs-reference-scale4000-3d-10s-seed123/`, and the six query files with
+source and prepared data use the directory named by `TSBS_DATA_ROOT`, and the six query files with
 the matching three-day window are named
 `queries_<use-case>_<database>_scale4000_3d_10s_seed123.tsv`.
 
@@ -165,14 +194,14 @@ To regenerate the three source archives with exactly these parameters:
 ```bash
 cd /mnt/fastdata/tsbs
 source matrixone/benchmark_profiles/tsbs_reference_scale4000_3d_10s.env
-DATA_ROOT="$PWD/data/tsbs-reference-scale4000-3d-10s-seed123"
-mkdir -p "$DATA_ROOT"
+export TSBS_DATA_ROOT=/data/tsbs-data/tsbs-reference-scale4000-3d-10s-seed123
+mkdir -p "$TSBS_DATA_ROOT"
 for use_case in cpu-only devops iot; do
   bin/tsbs_generate_data --format clickhouse --use-case "$use_case" \
     --scale "$TSBS_SCALE" --timestamp-start "$TSBS_TIMESTAMP_START" \
     --timestamp-end "$TSBS_TIMESTAMP_END" --log-interval "$TSBS_LOG_INTERVAL" \
     --seed "$TSBS_SEED" --max-data-points 0 \
-    | gzip -c > "$DATA_ROOT/clickhouse_${use_case}_${TSBS_DATASET_ID}.dat.gz"
+    | gzip -c > "$TSBS_DATA_ROOT/clickhouse_${use_case}_${TSBS_DATASET_ID}.dat.gz"
 done
 ```
 
@@ -181,8 +210,8 @@ Prepare each archive before running the comparison:
 ```bash
 for use_case in cpu-only devops iot; do
   python3 matrixone/prepare_data.py \
-    --source "$DATA_ROOT/clickhouse_${use_case}_${TSBS_DATASET_ID}.dat.gz" \
-    --output "$DATA_ROOT/prepared-${use_case}"
+    --source "$TSBS_DATA_ROOT/clickhouse_${use_case}_${TSBS_DATASET_ID}.dat.gz" \
+    --output "$TSBS_DATA_ROOT/prepared-${use_case}"
 done
 ```
 
@@ -192,7 +221,9 @@ sequence with:
 ```bash
 cd /mnt/fastdata/tsbs
 source matrixone/benchmark_profiles/tsbs_reference_scale4000_3d_10s.env
-DATA_ROOT="$PWD/data/tsbs-reference-scale4000-3d-10s-seed123" \
+TSBS_DATA_ROOT=/data/tsbs-data/tsbs-reference-scale4000-3d-10s-seed123 \
+TSBS_RESULT_ROOT=/data/tsbs-results \
+TSBS_LOG_ROOT=/data/tsbs-logs \
   matrixone/run_local.sh
 ```
 
@@ -202,3 +233,39 @@ validator derives the expected CPU hourly cardinalities from the profile's
 72-hour window. This remains a single-node comparison; collect resource
 usage and physical database sizes separately before treating it as a full
 throughput benchmark.
+
+## Run the upstream ClickHouse and InfluxDB scripts with external artifacts
+
+The generic TSBS scripts use the same artifact contract. Set
+`TSBS_DATA_ROOT` for generated/load archives and `TSBS_QUERY_ROOT` for query
+archives; `BULK_DATA_DIR` and explicit `DATA_FILE` still take precedence when
+an existing command requires them. Results from the ClickHouse and InfluxDB
+query wrappers can be placed in `TSBS_RESULT_ROOT` instead of beside the input
+query files.
+
+```bash
+export TSBS_DATA_ROOT=/data/tsbs-data/scale4000_3d_10s_seed123
+export TSBS_QUERY_ROOT=/data/tsbs-queries/scale4000_3d_10s_seed123
+export TSBS_RESULT_ROOT=/data/tsbs-results/scale4000_3d_10s_seed123
+
+# Load an InfluxDB archive.
+TSBS_DATA_ROOT="$TSBS_DATA_ROOT" \
+  scripts/load/load_influx.sh
+
+# Run generated InfluxDB queries against a selected endpoint.
+INFLUX_URL=http://127.0.0.1:8086 \
+TSBS_QUERY_ROOT="$TSBS_QUERY_ROOT" \
+TSBS_RESULT_ROOT="$TSBS_RESULT_ROOT/influx" \
+  scripts/run_queries/run_queries_influx.sh
+
+# Run generated ClickHouse queries against a selected endpoint.
+DATABASE_HOST=127.0.0.1 DATABASE_PORT=9000 \
+TSBS_QUERY_ROOT="$TSBS_QUERY_ROOT" \
+TSBS_RESULT_ROOT="$TSBS_RESULT_ROOT/clickhouse" \
+  scripts/run_queries/run_queries_clickhouse.sh
+```
+
+The custom MatrixOne/ClickHouse adapter uses prepared CSV under
+`TSBS_DATA_ROOT`; the upstream InfluxDB loader consumes its native Influx
+archive from the same root. These formats are intentionally not converted
+implicitly, so generate or transfer the format required by each loader.

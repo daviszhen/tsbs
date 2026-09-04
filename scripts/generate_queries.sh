@@ -8,8 +8,9 @@ if [[ -z "${EXE_FILE_NAME}" ]]; then
 fi
 
 EXE_FILE_VERSION=`md5sum $EXE_FILE_NAME | awk '{ print $1 }'`
-# Queries folder
-BULK_DATA_DIR=${BULK_DATA_DIR:-"/tmp/bulk_queries"}
+# Queries folder. Set TSBS_QUERY_ROOT to keep generated query archives outside
+# the repo. BULK_DATA_DIR remains the upstream-compatible override.
+BULK_DATA_DIR=${BULK_DATA_DIR:-${TSBS_QUERY_ROOT:-"/tmp/bulk_queries"}}
 
 # Form of data to generate
 USE_JSON=${USE_JSON:-false}

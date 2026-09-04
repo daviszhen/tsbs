@@ -2,7 +2,9 @@
 set -euo pipefail
 
 TSBS_ROOT=${TSBS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-DATA_ROOT=${DATA_ROOT:-"${TSBS_ROOT}/data/baseline-scale100-1d"}
+# TSBS_DATA_ROOT is the dataset directory (source archives and prepared-*).
+# DATA_ROOT remains as a backwards-compatible alias for existing invocations.
+TSBS_DATA_ROOT=${TSBS_DATA_ROOT:-${DATA_ROOT:-"${TSBS_ROOT}/data/baseline-scale100-1d"}}
 USE_CASES=${USE_CASES:-"cpu-only devops iot"}
 QUERY_REPEATS=${QUERY_REPEATS:-3}
 DATASET_ID=${TSBS_DATASET_ID:-scale100_1d_10s_seed123}
@@ -11,12 +13,14 @@ EXPECTED_HOURS=${TSBS_EXPECTED_HOURS:-24}
 RESULT_SET=${TSBS_RESULT_SET:-tsbs_local}
 LOG_SET=${TSBS_LOG_SET:-"$RESULT_SET"}
 DB_NAME_SUFFIX=${TSBS_DB_NAME_SUFFIX:-}
+RESULT_BASE=${TSBS_RESULT_ROOT:-"${TSBS_ROOT}/results"}
+LOG_BASE=${TSBS_LOG_ROOT:-"${TSBS_ROOT}/logs"}
 
-mkdir -p "${TSBS_ROOT}/results/${RESULT_SET}" "${TSBS_ROOT}/logs/${LOG_SET}"
+mkdir -p "${RESULT_BASE}/${RESULT_SET}" "${LOG_BASE}/${LOG_SET}"
 
 for use_case in $USE_CASES; do
-    source_data="${DATA_ROOT}/clickhouse_${use_case}_${DATASET_ID}.dat.gz"
-    prepared_dir="${DATA_ROOT}/prepared-${use_case}"
+    source_data="${TSBS_DATA_ROOT}/clickhouse_${use_case}_${DATASET_ID}.dat.gz"
+    prepared_dir="${TSBS_DATA_ROOT}/prepared-${use_case}"
     if [[ ! -f "$prepared_dir/metadata.json" ]]; then
         [[ -f "$source_data" ]] || {
             echo "missing source data for $use_case: $source_data" >&2
@@ -26,8 +30,8 @@ for use_case in $USE_CASES; do
             --source "$source_data" --output "$prepared_dir"
     fi
 
-    result_root="${TSBS_ROOT}/results/${RESULT_SET}/${use_case}"
-    log_root="${TSBS_ROOT}/logs/${LOG_SET}/${use_case}"
+    result_root="${RESULT_BASE}/${RESULT_SET}/${use_case}"
+    log_root="${LOG_BASE}/${LOG_SET}/${use_case}"
     query_file="${QUERY_ROOT}/queries_${use_case}_matrixone_${DATASET_ID}.tsv"
     clickhouse_query_file="${QUERY_ROOT}/queries_${use_case}_clickhouse_${DATASET_ID}.tsv"
     if [[ ! -f "$query_file" ]]; then

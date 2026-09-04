@@ -8,7 +8,13 @@ if [[ -z "$EXE_FILE_NAME" ]]; then
 fi
 
 # Default queries folder
-BULK_DATA_DIR=${BULK_DATA_DIR:-"/tmp/bulk_queries"}
+BULK_DATA_DIR=${BULK_DATA_DIR:-${TSBS_QUERY_ROOT:-"/tmp/bulk_queries"}}
+RESULT_ROOT=${RESULT_ROOT:-${TSBS_RESULT_ROOT:-}}
+DATABASE_HOST=${DATABASE_HOST:-localhost}
+DATABASE_PORT=${DATABASE_PORT:-9000}
+DATABASE_NAME=${DATABASE_NAME:-benchmark}
+DATABASE_USER=${DATABASE_USER:-default}
+DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
 MAX_QUERIES=${MAX_QUERIES:-"0"}
 NUM_WORKERS=${NUM_WORKERS:-$(grep -c ^processor /proc/cpuinfo)}  # match # of cores - worker per core
 
@@ -30,7 +36,12 @@ function run_file()
 
     # Several options on how to name results file
     #OUT_FULL_FILE_NAME="${DIR}/result_${DATA_FILE_NAME}"
-    OUT_FULL_FILE_NAME="${DIR}/result_${NO_EXT_DATA_FILE_NAME}.out"
+    if [[ -n "${RESULT_ROOT}" ]]; then
+        mkdir -p "${RESULT_ROOT}"
+        OUT_FULL_FILE_NAME="${RESULT_ROOT}/result_${NO_EXT_DATA_FILE_NAME}.out"
+    else
+        OUT_FULL_FILE_NAME="${DIR}/result_${NO_EXT_DATA_FILE_NAME}.out"
+    fi
     #OUT_FULL_FILE_NAME="${DIR}/${NO_EXT_DATA_FILE_NAME}.out"
 
     if [ "${EXTENSION}" == "gz" ]; then
@@ -45,6 +56,11 @@ function run_file()
         | $EXE_FILE_NAME \
             --max-queries $MAX_QUERIES \
             --workers $NUM_WORKERS \
+            --db-name "${DATABASE_NAME}" \
+            --hosts "${DATABASE_HOST}" \
+            --port "${DATABASE_PORT}" \
+            --user "${DATABASE_USER}" \
+            --password "${DATABASE_PASSWORD}" \
         | tee $OUT_FULL_FILE_NAME
 }
 
@@ -54,7 +70,7 @@ if [ "$#" -gt 0 ]; then
         run_file $FULL_DATA_FILE_NAME
     done
 else
-    echo "Do not have any files specified - run from default queries folder as ${BULK_DATA_DIR}/queries_clickhouse*"
+    echo "Do not have any files specified - run from query folder as ${BULK_DATA_DIR}/queries_clickhouse*"
     for FULL_DATA_FILE_NAME in "${BULK_DATA_DIR}/queries_clickhouse"*; do
         run_file $FULL_DATA_FILE_NAME
     done
