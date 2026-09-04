@@ -18,6 +18,11 @@ Current databases supported:
 + Timestream [(supplemental docs)](docs/timestream.md)
 + VictoriaMetrics [(supplemental docs)](docs/victoriametrics.md)
 
+For a local MatrixOne-versus-ClickHouse run using the deterministic TSBS
+`cpu-only` workload, see [`matrixone/README.md`](matrixone/README.md).  The
+adapter uses the TSBS generator and portable prepared CSV while keeping the
+database-specific load and query paths separate.
+
 ## Overview
 
 The **Time Series Benchmark Suite (TSBS)** is a collection of Go
