@@ -29,6 +29,20 @@ func TestGetConnectString(t *testing.T) {
 	}
 }
 
+func TestGetConnectStringCustomPort(t *testing.T) {
+	got := getConnectString(&ClickhouseConfig{
+		Host: "clickhouse.example",
+		Port: 19000,
+		User: "tsbs",
+		Password: "secret",
+		DbName: "benchmark",
+	}, true)
+	want := "tcp://clickhouse.example:19000?username=tsbs&password=secret&database=benchmark"
+	if got != want {
+		t.Errorf("incorrect connect string: got %s want %s", got, want)
+	}
+}
+
 func TestHypertableArr(t *testing.T) {
 	f := &factory{}
 	ha := f.New().(*tableArr)

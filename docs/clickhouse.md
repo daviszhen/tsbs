@@ -38,6 +38,10 @@ cpu,1451606400000000000,58.1317132304976170,2.6224297271376256,24.99694950699478
 
 Hostname of the ClickHouse server.
 
+#### `-port` (type: `int`, default: `9000`)
+
+Native TCP port of the ClickHouse server.
+
 #### `-user` (type: `string`, default: `default`)
 
 User to use to connect to the ClickHouse server. Yes, default user is really called **default**
@@ -67,6 +71,10 @@ system performance while writing data to the database.
 
 Comma separated list of hostnames for the ClickHouse servers.
 Workers are connected to a server in a round-robin fashion.
+
+#### `-port` (type: `int`, default: `9000`)
+
+Native TCP port used for every ClickHouse host.
 
 #### `-user` (type: `string`, default: `default`)
 
@@ -163,4 +171,8 @@ If you have powerful hardware, feel free to rise limits higher.
 NUM_WORKERS=1 MAX_QUERIES=10 ./run_queries_clickhouse.sh
 ```
 
-Enjoy results in `/tmp/bulk_queries/result_queries_clickhouse*` files.
+Set `TSBS_DATA_ROOT` for an external load-data directory and
+`TSBS_QUERY_ROOT` for an external query directory. Set `TSBS_RESULT_ROOT` to
+write query output separately from the input files, and use `DATABASE_HOST`,
+`DATABASE_PORT`, `DATABASE_USER`, and `DATABASE_PASSWORD` for the endpoint.
+With no overrides, results remain in `/tmp/bulk_queries/result_queries_clickhouse*`.

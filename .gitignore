@@ -9,3 +9,10 @@ bin
 
 # High Dynamic Range (HDR) Histogram files
 *.hdr
+
+# Local TSBS benchmark artifacts (kept on disk, not committed)
+data/
+results/tsbs_local/
+runtime/
+logs/tsbs_local/
+matrixone/__pycache__/
